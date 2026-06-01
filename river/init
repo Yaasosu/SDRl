@@ -53,6 +53,8 @@ riverctl border-color-unfocused 0x45475a
 riverctl border-color-urgent 0xf38ba8
 riverctl border-width 2
 
+
+
 # Переключение тегов Super+1-9
 for i in $(seq 1 9); do
     tags=$((1 << ($i - 1)))

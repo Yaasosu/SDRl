@@ -19,9 +19,13 @@ riverctl map-pointer normal Super BTN_LEFT move-view
 # Super + Space переключает между Stack и Tiling
 
 riverctl map normal Super Space send-layout-cmd yaso-layout "toggle"
-riverctl map normal Super S send-layout-cmd yaso-layout "stack"
-riverctl map normal Super C send-layout-cmd yaso-layout "dwindle"
-riverctl map normal Super N send-layout-cmd yaso-layout "niri"
+
+# Режим Stack: переключаем раскладку, включаем CSD (для новых окон) и убираем рамки River (сразу для всех)
+riverctl map normal Super S spawn "sh -c 'riverctl send-layout-cmd yaso-layout stack; riverctl rule-del ssd; riverctl rule-add csd; riverctl border-width 0'"
+
+# Режимы Tiling/Dwindle/Niri: переключаем раскладку, включаем SSD (рамки) и возвращаем границу в 2 пикселя
+riverctl map normal Super C spawn "sh -c 'riverctl send-layout-cmd yaso-layout dwindle; riverctl rule-del csd; riverctl rule-add ssd; riverctl border-width 2'"
+riverctl map normal Super N spawn "sh -c 'riverctl send-layout-cmd yaso-layout niri; riverctl rule-del csd; riverctl rule-add ssd; riverctl border-width 2'"
 
 # Скролл вправо: фокус на окно правее (которое новее) + сдвиг раскладки
 riverctl map normal Super Right spawn "sh -c 'riverctl focus-view previous; riverctl send-layout-cmd yaso-layout scroll-right'"
@@ -35,6 +39,15 @@ riverctl map normal Super Left spawn "sh -c 'riverctl focus-view next; riverctl 
 riverctl map normal Super H send-layout-cmd yaso-layout "ratio-dec"
 riverctl map normal Super L send-layout-cmd yaso-layout "ratio-inc"
 
+# --- РАБОТА С ДВУМЯ МОНИТОРАМИ ---
+# Переместить активное окно на следующий/предыдущий монитор
+riverctl map normal Super+Shift Right send-to-output -current-tags HDMI-A-1
+riverctl map normal Super+Shift Left send-to-output -current-tags DP-1
+
+# Переключить фокус на другой монитор
+riverctl map normal Super+Control Right focus-output HDMI-A-1
+riverctl map normal Super+Control Left focus-output DP-1
+
 riverctl border-color-focused 0x89b4fa
 riverctl border-color-unfocused 0x45475a
 riverctl border-color-urgent 0xf38ba8
@@ -46,3 +59,9 @@ for i in $(seq 1 9); do
     riverctl map normal Super $i set-focused-tags $tags
     riverctl map normal Super+Shift $i set-view-tags $tags
 done
+
+wlr-randr --output DP-1 --mode 1366x768 --pos 0,0
+
+# Настраиваем правый монитор (основной), сдвигая его вправо на 1366 пикселей
+wlr-randr --output HDMI-A-1 --mode 1920x1080 --pos 1366,0
+

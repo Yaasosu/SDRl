@@ -23,7 +23,9 @@ int layout_gap = 10;                  // Единый отступ (gap) для 
 
 
 struct river_layout_manager_v3 *layout_manager = NULL;
-struct wl_output *target_output = NULL;
+#define MAX_OUTPUTS 10
+struct wl_output *outputs[MAX_OUTPUTS];
+int output_count = 0;
 
 // --- Обработчик IPC команд от River ---
 static void layout_handle_user_command(void *data, struct river_layout_v3 *layout, const char *command) {
@@ -207,8 +209,8 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
     if (strcmp(interface, river_layout_manager_v3_interface.name) == 0) {
         layout_manager = wl_registry_bind(registry, name, &river_layout_manager_v3_interface, 1);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
-        if (target_output == NULL) {
-            target_output = wl_registry_bind(registry, name, &wl_output_interface, 1);
+        if (output_count < MAX_OUTPUTS) {
+            outputs[output_count++] = wl_registry_bind(registry, name, &wl_output_interface, 1);
         }
     }
 }
@@ -231,21 +233,26 @@ int main(int argc, char **argv) {
     wl_registry_add_listener(registry, &registry_listener, NULL);
     wl_display_roundtrip(display);
 
-    if (!layout_manager || !target_output) {
-        fprintf(stderr, "Initialization failed. Are you running river-classic?\n");
+    if (!layout_manager || output_count == 0) {
+        fprintf(stderr, "Initialization failed. Are you running river? Or no outputs found.\n");
         return 1;
     }
 
-    // Регистрация нашего генератора в River под именем "yaso-layout"
-    struct river_layout_v3 *layout = river_layout_manager_v3_get_layout(layout_manager, target_output, "yaso-layout");
-    river_layout_v3_add_listener(layout, &layout_listener, NULL);
+    // Регистрация нашего генератора в River для всех мониторов под именем "yaso-layout"
+    struct river_layout_v3 *layouts[MAX_OUTPUTS];
+    for (int i = 0; i < output_count; i++) {
+        layouts[i] = river_layout_manager_v3_get_layout(layout_manager, outputs[i], "yaso-layout");
+        river_layout_v3_add_listener(layouts[i], &layout_listener, NULL);
+    }
 
     // Бесконечный цикл прослушивания сокета Wayland
     while (wl_display_dispatch(display) != -1) {
         // Ожидание событий
     }
 
-    river_layout_v3_destroy(layout);
+    for (int i = 0; i < output_count; i++) {
+        river_layout_v3_destroy(layouts[i]);
+    }
     river_layout_manager_v3_destroy(layout_manager);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);

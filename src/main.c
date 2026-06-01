@@ -18,6 +18,7 @@ typedef enum {
 LayoutMode current_mode = MODE_STACK; // По умолчанию режим Master-Stack
 float master_ratio = 0.60;            // По умолчанию Мастер занимает 60%
 int scroll_window_index = 0;
+static uint32_t last_view_count = 0; // Для отслеживания появления новых окон
 
 
 struct river_layout_manager_v3 *layout_manager = NULL;
@@ -67,6 +68,7 @@ static void handle_layout_demand(void *data,
                                  uint32_t tags,
                                  uint32_t serial) {
     if (view_count == 0) {
+        last_view_count = view_count;
         river_layout_v3_commit(layout, "my-layout", serial);
         return;
     }
@@ -154,6 +156,11 @@ static void handle_layout_demand(void *data,
         int max_index = (int)view_count - 2; 
         if (max_index < 0) max_index = 0;
 
+        // Автоскролл к самому правому краю при появлении нового окна
+        if (view_count > last_view_count) {
+            scroll_window_index = max_index;
+        }
+
         if (scroll_window_index > max_index) scroll_window_index = max_index;
         if (scroll_window_index < 0) scroll_window_index = 0;
 
@@ -167,6 +174,8 @@ static void handle_layout_demand(void *data,
             river_layout_v3_push_view_dimensions(layout, windows[i].x, windows[i].y, windows[i].w, windows[i].h, serial);
         }
     }
+
+    last_view_count = view_count;
 
     river_layout_v3_commit(layout, "my-layout", serial);
 }

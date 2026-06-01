@@ -30,7 +30,10 @@ inline void calculate_niri_scrolling(
         windows[i].y = current_y;
 
         // X-координата — это самое важное здесь.
-        windows[i].x = monitor_x + gap + (i * (column_width + gap)) - scroll_offset;
+        // Инвертируем индекс (num_windows - 1 - i), чтобы новые окна (i = 0)
+        // спавнились справа, а старые оставались слева.
+        int pos_index = (num_windows - 1) - i;
+        windows[i].x = monitor_x + gap + (pos_index * (column_width + gap)) - scroll_offset;
     }
 }
 

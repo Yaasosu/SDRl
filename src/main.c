@@ -1,231 +1,164 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#include <stdlib.h>
+#include <unistd.h>
 #include <wayland-client.h>
-#include "river-layout-v3-client-protocol.h"
-#include "scroller.h"
-#include "dwindle.h"
-#include "stack.h"
+#include <xkbcommon/xkbcommon-keysyms.h>
+#include "river-window-management-v1-client-protocol.h"
+#include "river-xkb-bindings-v1-client-protocol.h"
 
-typedef enum {
-    MODE_STACK,
-    MODE_TILING,
-    MODE_DWINDLE,
-    MODE_NIRI,
-    MODE_MONOCLE
-} LayoutMode;
+static struct river_window_manager_v1 *wm = NULL;
+static struct river_window_v1 *new_window = NULL;
+static struct river_seat_v1 *active_seat = NULL;
+static struct river_xkb_bindings_v1 *xkb_bindings = NULL;
+static struct river_xkb_binding_v1 *term_binding = NULL;
+static struct river_xkb_binding_v1 *exit_binding = NULL;
+static int bindings_enabled = 0;
+static int next_x = 100;
+static int next_y = 100;
 
-LayoutMode current_mode = MODE_STACK; // По умолчанию режим Master-Stack
-float master_ratio = 0.60;            // По умолчанию Мастер занимает 60%
-int scroll_window_index = 0;
-static uint32_t last_view_count = 0; // Для отслеживания появления новых окон
-int layout_gap = 10;                  // Единый отступ (gap) для всех тайлинговых режимов
-
-
-struct river_layout_manager_v3 *layout_manager = NULL;
-#define MAX_OUTPUTS 10
-struct wl_output *outputs[MAX_OUTPUTS];
-int output_count = 0;
-
-// --- Обработчик IPC команд от River ---
-static void layout_handle_user_command(void *data, struct river_layout_v3 *layout, const char *command) {
-    (void)layout; // Чтобы компилятор не ругался на неиспользуемую переменную
-
-    if (strcmp(command, "toggle") == 0) {
-        if (current_mode == MODE_STACK) {
-            current_mode = MODE_TILING;
-            printf("current mod is MODE_TILING\n");
-            system("notify-send -t 1500 'Layout Changed' 'Tiling (Master-Stack)' &");
-        } else if (current_mode == MODE_TILING) {
-            current_mode = MODE_DWINDLE;
-            printf("current mod is MODE_DWINDLE\n");
-            system("notify-send -t 1500 'Layout Changed' 'Dwindle (Spiral)' &");
-        } else if (current_mode == MODE_DWINDLE) {
-            current_mode = MODE_NIRI;
-            printf("current mod is MODE_NIRI\n");
-            system("notify-send -t 1500 'Layout Changed' 'Niri (Scrolling)' &");
-        } else if (current_mode == MODE_NIRI) {
-            current_mode = MODE_MONOCLE;
-            printf("current mod is MODE_MONOCLE\n");
-            system("notify-send -t 1500 'Layout Changed' 'Monocle (Fullscreen)' &");
-        } else {
-            current_mode = MODE_STACK;
-            printf("current mod is MODE_STACK\n");
-            system("notify-send -t 1500 'Layout Changed' 'Stacking (Floating)' &");
-        }
-    } else if (strcmp(command, "niri") == 0) {
-        current_mode = MODE_NIRI;
-        printf("current mod is MODE_NIRI\n");
-        system("notify-send -t 1500 'Layout Changed' 'Niri (Scrolling)' &");
-    } else if (strcmp(command, "tiling") == 0) {
-        current_mode = MODE_TILING;
-        printf("current mod is MODE_TILING\n");
-        system("notify-send -t 1500 'Layout Changed' 'Tiling (Master-Stack)' &");
-    } else if (strcmp(command, "stack") == 0) {
-        current_mode = MODE_STACK;
-        printf("current mod is MODE_STACK\n");
-        system("notify-send -t 1500 'Layout Changed' 'Stacking (Floating)' &");
-    } else if (strcmp(command, "dwindle") == 0) {
-        current_mode = MODE_DWINDLE;
-        printf("current mod is MODE_DWINDLE\n");
-        system("notify-send -t 1500 'Layout Changed' 'Dwindle (Spiral)' &");
-    } else if (strcmp(command, "monocle") == 0) {
-        current_mode = MODE_MONOCLE;
-        printf("current mod is MODE_MONOCLE\n");
-        system("notify-send -t 1500 'Layout Changed' 'Monocle (Fullscreen)' &");
-    } else if (strcmp(command, "scroll-right") == 0) {
-        scroll_window_index++; // Сдвигаем ровно на 1 окно вправо
-    } else if (strcmp(command, "scroll-left") == 0) {
-        scroll_window_index--; // Сдвигаем ровно на 1 окно влево
-        if (scroll_window_index < 0) scroll_window_index = 0; // Блокируем скролл левее первого окна
-    } else if (strcmp(command, "ratio-inc") == 0) {
-        master_ratio += 0.05f;
-        if (master_ratio > 0.95f) master_ratio = 0.95f; // Защита
-    } else if (strcmp(command, "ratio-dec") == 0) {
-        master_ratio -= 0.05f;
-        if (master_ratio < 0.05f) master_ratio = 0.05f; // Защита
+static void term_key_pressed(void *data, struct river_xkb_binding_v1 *binding) {
+    if (fork() == 0) {
+        execlp("alacritty", "alacritty", NULL);
+        exit(1);
     }
 }
-
-// --- Обработчик перерасчета координат ---
-static void handle_layout_demand(void *data,
-                                 struct river_layout_v3 *layout,
-                                 uint32_t view_count,
-                                 uint32_t usable_width,
-                                 uint32_t usable_height,
-                                 uint32_t tags,
-                                 uint32_t serial) {
-    if (view_count == 0) {
-        last_view_count = view_count;
-        river_layout_v3_commit(layout, "my-layout", serial);
-        return;
-    }
-
-    if (current_mode == MODE_STACK) {
-        struct WindowRect windows[view_count];
-        calculate_stack((int)usable_width, (int)usable_height, layout_gap, (int)view_count, windows);
-        
-        for (uint32_t i = 0; i < view_count; ++i) {
-            river_layout_v3_push_view_dimensions(layout, windows[i].x, windows[i].y, windows[i].w, windows[i].h, serial);
-        }
-    } 
-    
-    else if (current_mode == MODE_TILING) {
-        // --- Режим Мастер-Стек ---
-        if (view_count == 1) {
-            river_layout_v3_push_view_dimensions(layout, layout_gap, layout_gap, usable_width - (layout_gap * 2), usable_height - (layout_gap * 2), serial);
-        } else {
-            uint32_t available_width = usable_width - (layout_gap * 3); // отступы слева, между окнами, справа
-            uint32_t master_width = (uint32_t)(available_width * master_ratio);
-            uint32_t stack_width = available_width - master_width;
-            
-            // Высота для каждого окна в стеке
-            uint32_t stack_view_count = view_count - 1;
-            uint32_t available_height = usable_height - (layout_gap * (stack_view_count + 1));
-            uint32_t stack_height = available_height / stack_view_count;
-
-            for (uint32_t i = 0; i < view_count; ++i) {
-                if (i == 0) {
-                    // Мастер-окно (слева)
-                    river_layout_v3_push_view_dimensions(layout, layout_gap, layout_gap, master_width, usable_height - (layout_gap * 2), serial);
-                } else {
-                    // Окна в стеке (справа, делят высоту)
-                    int32_t x = (layout_gap * 2) + master_width;
-                    int32_t y = layout_gap + (i - 1) * (stack_height + layout_gap);
-                    
-                    // Компенсируем пиксели от округления при делении для самого нижнего окна
-                    uint32_t h = stack_height;
-                    if (i == view_count - 1) {
-                        h = (usable_height - layout_gap) - y;
-                    }
-                    
-                    river_layout_v3_push_view_dimensions(layout, x, y, stack_width, h, serial);
-                }
-            }
-        }
-    }
-    else if (current_mode == MODE_DWINDLE) {
-        // --- Режим Dwindle (Спираль) ---
-        if (view_count == 1) {
-            river_layout_v3_push_view_dimensions(layout, layout_gap, layout_gap, usable_width - (layout_gap * 2), usable_height - (layout_gap * 2), serial);
-        } else {
-            struct WindowRect windows[view_count];
-            calculate_dwindle(0, 0, (int)usable_width, (int)usable_height, layout_gap, (int)view_count, windows);
-            
-            for (uint32_t i = 0; i < view_count; ++i) {
-                river_layout_v3_push_view_dimensions(layout, windows[i].x, windows[i].y, windows[i].w, windows[i].h, serial);
-            }
-        }
-    }
-    else if (current_mode == MODE_NIRI) {
-        // Настройки Niri:
-        int column_width = ((int)usable_width - (layout_gap * 3)) / 2; 
-
-        // Ограничиваем индекс скролла, чтобы не уйти за края
-        int max_index = (int)view_count - 2; 
-        if (max_index < 0) max_index = 0;
-
-        // Автоскролл к самому правому краю при появлении нового окна
-        if (view_count > last_view_count) {
-            scroll_window_index = max_index;
-        }
-
-        if (scroll_window_index > max_index) scroll_window_index = max_index;
-        if (scroll_window_index < 0) scroll_window_index = 0;
-
-        // Вычисляем реальное смещение в пикселях: одно окно (колонка) + отступ
-        int actual_scroll_offset = scroll_window_index * (column_width + layout_gap);
-
-        struct WindowRect windows[view_count];
-        calculate_niri_scrolling(0, 0, (int)usable_width, (int)usable_height, layout_gap, (int)view_count, column_width, actual_scroll_offset, windows);
-
-        for (uint32_t i = 0; i < view_count; ++i) {
-            river_layout_v3_push_view_dimensions(layout, windows[i].x, windows[i].y, windows[i].w, windows[i].h, serial);
-        }
-    }
-    else if (current_mode == MODE_MONOCLE) {
-        // --- Режим Monocle (все окна на весь экран с учетом отступов) ---
-        for (uint32_t i = 0; i < view_count; ++i) {
-            river_layout_v3_push_view_dimensions(layout, layout_gap, layout_gap, usable_width - (layout_gap * 2), usable_height - (layout_gap * 2), serial);
-        }
-    }
-
-    last_view_count = view_count;
-
-    river_layout_v3_commit(layout, "my-layout", serial);
-}
-
-// Привязываем функции к протоколу
-static const struct river_layout_v3_listener layout_listener = {
-    .layout_demand = handle_layout_demand,
-    .user_command = layout_handle_user_command,
+static void term_key_released(void *data, struct river_xkb_binding_v1 *binding) {}
+static const struct river_xkb_binding_v1_listener term_key_listener = {
+    .pressed = term_key_pressed,
+    .released = term_key_released,
 };
 
+static void exit_key_pressed(void *data, struct river_xkb_binding_v1 *binding) {
+    if (wm) {
+        river_window_manager_v1_exit_session(wm);
+    }
+}
+static void exit_key_released(void *data, struct river_xkb_binding_v1 *binding) {}
+static const struct river_xkb_binding_v1_listener exit_key_listener = {
+    .pressed = exit_key_pressed,
+    .released = exit_key_released,
+};
 
-
-// --- Обработчик реестра (инициализация) ---
-static void registry_handle_global(void *data, struct wl_registry *registry,
-                                   uint32_t name, const char *interface, uint32_t version) {
-    if (strcmp(interface, river_layout_manager_v3_interface.name) == 0) {
-        layout_manager = wl_registry_bind(registry, name, &river_layout_manager_v3_interface, 1);
-    } else if (strcmp(interface, wl_output_interface.name) == 0) {
-        if (output_count < MAX_OUTPUTS) {
-            outputs[output_count++] = wl_registry_bind(registry, name, &wl_output_interface, 1);
-        }
+static void setup_bindings() {
+    if (!xkb_bindings || !active_seat || term_binding) return;
+    
+    // Super + Enter = запуск терминала
+    term_binding = river_xkb_bindings_v1_get_xkb_binding(xkb_bindings, active_seat, XKB_KEY_Return, RIVER_SEAT_V1_MODIFIERS_MOD4);
+    river_xkb_binding_v1_add_listener(term_binding, &term_key_listener, NULL);
+    
+    // Super + Shift + E = выход из WM
+    exit_binding = river_xkb_bindings_v1_get_xkb_binding(xkb_bindings, active_seat, XKB_KEY_e, RIVER_SEAT_V1_MODIFIERS_MOD4 | RIVER_SEAT_V1_MODIFIERS_SHIFT);
+    river_xkb_binding_v1_add_listener(exit_binding, &exit_key_listener, NULL);
+    
+    if (wm) {
+        river_window_manager_v1_manage_dirty(wm);
     }
 }
 
-static void registry_handle_global_remove(void *data, struct wl_registry *registry, uint32_t name) {}
+static void wm_unavailable(void *data, struct river_window_manager_v1 *wm) {
+    fprintf(stderr, "WM недоступен (возможно, уже запущен другой оконный менеджер)\n");
+    exit(1);
+}
+static void wm_finished(void *data, struct river_window_manager_v1 *wm) {}
+static void wm_manage_start(void *data, struct river_window_manager_v1 *wm) {
+    // Если появилось новое окно, задаем ему размеры и позиционируем
+    if (new_window) {
+        // Запрашиваем размер 800x600
+        river_window_v1_propose_dimensions(new_window, 800, 600);
+        
+        // Создаём ноду рендеринга и располагаем её на экране
+        struct river_node_v1 *node = river_window_v1_get_node(new_window);
+        river_node_v1_place_top(node);
+        river_node_v1_set_position(node, next_x, next_y);
+        
+        // Сдвигаем координаты для каждого следующего окна (эффект лесенки)
+        next_x += 40;
+        next_y += 40;
+        if (next_x > 500) { 
+            next_x = 100; next_y = 100; 
+        }
+
+        // Делаем окно видимым
+        river_window_v1_show(new_window);
+        
+        // Передаём фокус ввода (клавиатуру) новому окну
+        if (active_seat) {
+            river_seat_v1_focus_window(active_seat, new_window);
+        }
+
+        new_window = NULL;
+    }
+
+    if (term_binding && exit_binding && !bindings_enabled) {
+        river_xkb_binding_v1_enable(term_binding);
+        river_xkb_binding_v1_enable(exit_binding);
+        bindings_enabled = 1;
+    }
+
+    river_window_manager_v1_manage_finish(wm);
+}
+static void wm_render_start(void *data, struct river_window_manager_v1 *wm) {
+    river_window_manager_v1_render_finish(wm);
+}
+static void wm_session_locked(void *data, struct river_window_manager_v1 *wm) {}
+static void wm_session_unlocked(void *data, struct river_window_manager_v1 *wm) {}
+static void wm_window(void *data, struct river_window_manager_v1 *wm, struct river_window_v1 *window) {
+    printf("Новое окно создано!\n");
+    new_window = window;
+}
+static void wm_output(void *data, struct river_window_manager_v1 *wm, struct river_output_v1 *output) {
+    printf("Найден монитор!\n");
+}
+static void wm_seat(void *data, struct river_window_manager_v1 *wm, struct river_seat_v1 *seat) {
+    printf("Найдено устройство ввода (seat)!\n");
+    active_seat = seat;
+    setup_bindings();
+}
+
+static const struct river_window_manager_v1_listener wm_listener = {
+    .unavailable = wm_unavailable,
+    .finished = wm_finished,
+    .manage_start = wm_manage_start,
+    .render_start = wm_render_start,
+    .session_locked = wm_session_locked,
+    .session_unlocked = wm_session_unlocked,
+    .window = wm_window,
+    .output = wm_output,
+    .seat = wm_seat,
+};
+
+static void registry_global(void *data, struct wl_registry *registry,
+                            uint32_t name, const char *interface,
+                            uint32_t version) {
+    if (strcmp(interface, river_window_manager_v1_interface.name) == 0) {
+        // Используем предлагаемую сервером версию вместо жестко заданной 1
+        wm = wl_registry_bind(registry, name,
+                              &river_window_manager_v1_interface, version);
+        
+        // ВАЖНО: Вешаем слушатель сразу после bind, до завершения wl_display_roundtrip!
+        river_window_manager_v1_add_listener(wm, &wm_listener, NULL);
+        printf("Найден river-window-management-v1\n");
+    } else if (strcmp(interface, "river_xkb_bindings_v1") == 0) {
+        xkb_bindings = wl_registry_bind(registry, name,
+                                        (const struct wl_interface*)&river_xkb_bindings_v1_interface, version);
+        printf("Найден river-xkb-bindings-v1\n");
+        setup_bindings();
+    }
+}
+
+static void registry_global_remove(void *data, struct wl_registry *registry,
+                                   uint32_t name) {}
 
 static const struct wl_registry_listener registry_listener = {
-    .global = registry_handle_global,
-    .global_remove = registry_handle_global_remove,
+    .global = registry_global,
+    .global_remove = registry_global_remove,
 };
 
-int main(int argc, char **argv) {
+int main(void) {
     struct wl_display *display = wl_display_connect(NULL);
     if (!display) {
-        fprintf(stderr, "Failed to connect to Wayland display\n");
+        fprintf(stderr, "Не удалось подключиться к Wayland\n");
         return 1;
     }
 
@@ -233,29 +166,14 @@ int main(int argc, char **argv) {
     wl_registry_add_listener(registry, &registry_listener, NULL);
     wl_display_roundtrip(display);
 
-    if (!layout_manager || output_count == 0) {
-        fprintf(stderr, "Initialization failed. Are you running river? Or no outputs found.\n");
+    if (!wm) {
+        fprintf(stderr, "river-window-management-v1 не найден\n");
         return 1;
     }
 
-    // Регистрация нашего генератора в River для всех мониторов под именем "yaso-layout"
-    struct river_layout_v3 *layouts[MAX_OUTPUTS];
-    for (int i = 0; i < output_count; i++) {
-        layouts[i] = river_layout_manager_v3_get_layout(layout_manager, outputs[i], "yaso-layout");
-        river_layout_v3_add_listener(layouts[i], &layout_listener, NULL);
-    }
+    printf("WM запущен, ждём события...\n");
+    while (wl_display_dispatch(display) != -1) {}
 
-    // Бесконечный цикл прослушивания сокета Wayland
-    while (wl_display_dispatch(display) != -1) {
-        // Ожидание событий
-    }
-
-    for (int i = 0; i < output_count; i++) {
-        river_layout_v3_destroy(layouts[i]);
-    }
-    river_layout_manager_v3_destroy(layout_manager);
-    wl_registry_destroy(registry);
     wl_display_disconnect(display);
-
     return 0;
 }

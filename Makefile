@@ -1,26 +1,22 @@
-CC = gcc
-CFLAGS = -Wall -w -Wextra -O2 $(shell pkg-config --cflags wayland-client)
-LDFLAGS = $(shell pkg-config --libs wayland-client)
+CC ?= gcc
+CFLAGS ?= -Wall -Wextra -g
 
-TARGET = my-layout
-SRC = src/main.c src/river-layout-v3-protocol.c
-OBJ = $(SRC:.c=.o)
+WAYLAND_CFLAGS = $(shell pkg-config --cflags wayland-client)
+WAYLAND_LIBS = $(shell pkg-config --libs wayland-client)
+
+SRCS = src/main.c src/river-window-management-v1-protocol.c src/river-xkb-bindings-v1-protocol.c
+OBJS = $(SRCS:.c=.o)
+TARGET = river-wm-client
 
 all: $(TARGET)
 
-$(TARGET): $(OBJ)
-	$(CC) -o $@ $^ $(LDFLAGS)
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(WAYLAND_LIBS)
 
-src/river-layout-v3-protocol.c: protocol/river-layout-v3.xml
-	wayland-scanner private-code < $< > $@
-
-src/river-layout-v3-client-protocol.h: protocol/river-layout-v3.xml
-	wayland-scanner client-header < $< > $@
-
-src/main.c: src/river-layout-v3-client-protocol.h
+src/%.o: src/%.c
+	$(CC) $(CFLAGS) -Isrc $(WAYLAND_CFLAGS) -c $< -o $@
 
 clean:
-	rm -f $(TARGET) $(OBJ) src/river-layout-v3-protocol.c src/river-layout-v3-client-protocol.h
+	rm -f $(OBJS) $(TARGET)
 
 .PHONY: all clean
-

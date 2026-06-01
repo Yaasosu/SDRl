@@ -8,7 +8,8 @@
 // --- Состояние нашего менеджера слоев ---
 typedef enum {
     MODE_STACK,
-    MODE_TILING
+    MODE_TILING,
+    MODE_DWINDLE
 } LayoutMode;
 
 LayoutMode current_mode = MODE_STACK; // По умолчанию режим Master-Stack
@@ -22,11 +23,15 @@ static void handle_user_command(void *data,
                                 struct river_layout_v3 *layout,
                                 const char *command) {
     if (strcmp(command, "toggle") == 0) {
-        current_mode = (current_mode == MODE_STACK) ? MODE_TILING : MODE_STACK;
-    } else if (strcmp(command, "stack") == 0) {
-        current_mode = MODE_STACK;
-    } else if (strcmp(command, "tiling") == 0) {
-        current_mode = MODE_TILING;
+        if (current_mode == MODE_STACK) {
+            current_mode = MODE_TILING;
+        } else if (current_mode == MODE_TILING) {
+            current_mode = MODE_DWINDLE;
+        } else {
+            current_mode = MODE_STACK;
+        }
+
+    
     } else if (strcmp(command, "ratio-inc") == 0) {
         // Увеличиваем размер мастера
         master_ratio += 0.05;
@@ -36,6 +41,7 @@ static void handle_user_command(void *data,
         master_ratio -= 0.05;
         if (master_ratio < 0.05) master_ratio = 0.05; // Защита
     }
+
     // После команды River вызовет handle_layout_demand
 }
 
@@ -108,6 +114,48 @@ static void handle_layout_demand(void *data,
                     int32_t x = master_width;
                     int32_t y = (i - 1) * stack_height;
                     river_layout_v3_push_view_dimensions(layout, x, y, stack_width, stack_height, serial);
+                }
+            }
+        }
+    }
+    else if (current_mode == MODE_DWINDLE) {
+        // --- Режим Dwindle (Спираль) ---
+        if (view_count == 1) {
+            river_layout_v3_push_view_dimensions(layout, 0, 0, usable_width, usable_height, serial);
+        } else {
+            uint32_t curr_x = 0;
+            uint32_t curr_y = 0;
+            uint32_t curr_w = usable_width;
+            uint32_t curr_h = usable_height;
+
+            for (uint32_t i = 0; i < view_count; ++i) {
+                // Если это последнее окно, оно забирает всё оставшееся пространство
+                if (i == view_count - 1) {
+                    river_layout_v3_push_view_dimensions(layout, curr_x, curr_y, curr_w, curr_h, serial);
+                    break;
+                }
+
+                uint32_t win_w, win_h;
+
+                // Разрезаем ту сторону, которая сейчас длиннее
+                if (curr_w > curr_h) {
+                    win_w = curr_w / 2;
+                    win_h = curr_h;
+                    
+                    river_layout_v3_push_view_dimensions(layout, curr_x, curr_y, win_w, win_h, serial);
+                    
+                    // Сдвигаем координаты для следующих окон вправо
+                    curr_x += win_w;
+                    curr_w -= win_w;
+                } else {
+                    win_w = curr_w;
+                    win_h = curr_h / 2;
+                    
+                    river_layout_v3_push_view_dimensions(layout, curr_x, curr_y, win_w, win_h, serial);
+                    
+                    // Сдвигаем координаты для следующих окон вниз
+                    curr_y += win_h;
+                    curr_h -= win_h;
                 }
             }
         }

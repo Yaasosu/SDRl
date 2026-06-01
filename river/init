@@ -5,15 +5,13 @@
 
 # 2. Устанавливаем твой генератор слоев
 riverctl default-layout yaso-layout
+# riverctl rule-add -app-id '*' csd // -> window decoration
 
 # --- БИНДЫ ---
 
 riverctl map normal Super Return spawn foot
-
-riverctl map normal Super Q close
-
+riverctl map normal Super K close
 riverctl map normal Super+Shift E exit
-
 riverctl map normal Super F toggle-fullscreen
 
 riverctl map-pointer normal Super BTN_RIGHT resize-view
@@ -25,10 +23,16 @@ riverctl map-pointer normal Super BTN_LEFT move-view
 riverctl map normal Super Space send-layout-cmd yaso-layout "toggle"
 riverctl map normal Super T send-layout-cmd yaso-layout "tiling"
 riverctl map normal Super S send-layout-cmd yaso-layout "stack"
+riverctl map normal Super C send-layout-cmd yaso-layout "dwindle"
 
 # Изменение размера тайлинга (двигаем границу)
 riverctl map normal Super H send-layout-cmd yaso-layout "ratio-dec"
 riverctl map normal Super L send-layout-cmd yaso-layout "ratio-inc"
+
+riverctl border-color-focused 0x89b4fa
+riverctl border-color-unfocused 0x45475a
+riverctl border-color-urgent 0xf38ba8
+riverctl border-width 2
 
 # Переключение тегов Super+1-9
 for i in $(seq 1 9); do

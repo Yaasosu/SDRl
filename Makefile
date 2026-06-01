@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 $(shell pkg-config --cflags wayland-client)
+CFLAGS = -Wall -w -Wextra -O2 $(shell pkg-config --cflags wayland-client)
 LDFLAGS = $(shell pkg-config --libs wayland-client)
 
 TARGET = my-layout

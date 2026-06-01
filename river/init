@@ -24,6 +24,11 @@ riverctl map normal Super Space send-layout-cmd yaso-layout "toggle"
 riverctl map normal Super T send-layout-cmd yaso-layout "tiling"
 riverctl map normal Super S send-layout-cmd yaso-layout "stack"
 riverctl map normal Super C send-layout-cmd yaso-layout "dwindle"
+riverctl map normal Super N send-layout-cmd yaso-layout "niri"
+
+# Скроллинг ленты Niri влево и вправо (работает только если активен этот режим)
+riverctl map normal Super Right send-layout-cmd yaso-layout "scroll-right"
+riverctl map normal Super Left send-layout-cmd yaso-layout "scroll-left"
 
 # Изменение размера тайлинга (двигаем границу)
 riverctl map normal Super H send-layout-cmd yaso-layout "ratio-dec"

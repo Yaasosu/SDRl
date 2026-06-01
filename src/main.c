@@ -3,46 +3,59 @@
 #include <string.h>
 #include <wayland-client.h>
 #include "river-layout-v3-client-protocol.h"
+#include "scroller.h"
+#include "dwindle.h"
 
 // --- Состояние нашего менеджера слоев ---
 // --- Состояние нашего менеджера слоев ---
 typedef enum {
     MODE_STACK,
     MODE_TILING,
-    MODE_DWINDLE
+    MODE_DWINDLE,
+    MODE_NIRI
 } LayoutMode;
 
 LayoutMode current_mode = MODE_STACK; // По умолчанию режим Master-Stack
 float master_ratio = 0.60;            // По умолчанию Мастер занимает 60%
+int scroll_window_index = 0;
+
 
 struct river_layout_manager_v3 *layout_manager = NULL;
 struct wl_output *target_output = NULL;
 
 // --- Обработчик IPC команд от River ---
-static void handle_user_command(void *data,
-                                struct river_layout_v3 *layout,
-                                const char *command) {
+static void layout_handle_user_command(void *data, struct river_layout_v3 *layout, const char *command) {
+    (void)layout; // Чтобы компилятор не ругался на неиспользуемую переменную
+
     if (strcmp(command, "toggle") == 0) {
         if (current_mode == MODE_STACK) {
             current_mode = MODE_TILING;
+            printf("current mod is MODE_TILING\n");
         } else if (current_mode == MODE_TILING) {
             current_mode = MODE_DWINDLE;
+            printf("current mod is MODE_DWINDLE\n");
+        } else if (current_mode == MODE_DWINDLE) {
+            current_mode = MODE_NIRI;
+            printf("current mod is MODE_NIRI\n");
         } else {
             current_mode = MODE_STACK;
+            printf("current mod is MODE_STACK\n");
         }
-
-    
+    } else if (strcmp(command, "niri") == 0) {
+        current_mode = MODE_NIRI;
+        printf("current mod is MODE_NIRI\n");
+    } else if (strcmp(command, "scroll-right") == 0) {
+        scroll_window_index++; // Сдвигаем ровно на 1 окно вправо
+    } else if (strcmp(command, "scroll-left") == 0) {
+        scroll_window_index--; // Сдвигаем ровно на 1 окно влево
+        if (scroll_window_index < 0) scroll_window_index = 0; // Блокируем скролл левее первого окна
     } else if (strcmp(command, "ratio-inc") == 0) {
-        // Увеличиваем размер мастера
-        master_ratio += 0.05;
-        if (master_ratio > 0.95) master_ratio = 0.95; // Защита
+        master_ratio += 0.05f;
+        if (master_ratio > 0.95f) master_ratio = 0.95f; // Защита
     } else if (strcmp(command, "ratio-dec") == 0) {
-        // Уменьшаем размер мастера
-        master_ratio -= 0.05;
-        if (master_ratio < 0.05) master_ratio = 0.05; // Защита
+        master_ratio -= 0.05f;
+        if (master_ratio < 0.05f) master_ratio = 0.05f; // Защита
     }
-
-    // После команды River вызовет handle_layout_demand
 }
 
 // --- Обработчик перерасчета координат ---
@@ -123,41 +136,35 @@ static void handle_layout_demand(void *data,
         if (view_count == 1) {
             river_layout_v3_push_view_dimensions(layout, 0, 0, usable_width, usable_height, serial);
         } else {
-            uint32_t curr_x = 0;
-            uint32_t curr_y = 0;
-            uint32_t curr_w = usable_width;
-            uint32_t curr_h = usable_height;
-
+            int gap = 10;
+            struct WindowRect windows[view_count];
+            calculate_dwindle(0, 0, (int)usable_width, (int)usable_height, gap, (int)view_count, windows);
+            
             for (uint32_t i = 0; i < view_count; ++i) {
-                // Если это последнее окно, оно забирает всё оставшееся пространство
-                if (i == view_count - 1) {
-                    river_layout_v3_push_view_dimensions(layout, curr_x, curr_y, curr_w, curr_h, serial);
-                    break;
-                }
-
-                uint32_t win_w, win_h;
-
-                // Разрезаем ту сторону, которая сейчас длиннее
-                if (curr_w > curr_h) {
-                    win_w = curr_w / 2;
-                    win_h = curr_h;
-                    
-                    river_layout_v3_push_view_dimensions(layout, curr_x, curr_y, win_w, win_h, serial);
-                    
-                    // Сдвигаем координаты для следующих окон вправо
-                    curr_x += win_w;
-                    curr_w -= win_w;
-                } else {
-                    win_w = curr_w;
-                    win_h = curr_h / 2;
-                    
-                    river_layout_v3_push_view_dimensions(layout, curr_x, curr_y, win_w, win_h, serial);
-                    
-                    // Сдвигаем координаты для следующих окон вниз
-                    curr_y += win_h;
-                    curr_h -= win_h;
-                }
+                river_layout_v3_push_view_dimensions(layout, windows[i].x, windows[i].y, windows[i].w, windows[i].h, serial);
             }
+        }
+    }
+    else if (current_mode == MODE_NIRI) {
+        // Настройки Niri:
+        int gap = 10; // Внешние и внутренние отступы
+        int column_width = ((int)usable_width - (gap * 3)) / 2; 
+
+        // Ограничиваем индекс скролла, чтобы не уйти за края
+        int max_index = (int)view_count - 2; 
+        if (max_index < 0) max_index = 0;
+
+        if (scroll_window_index > max_index) scroll_window_index = max_index;
+        if (scroll_window_index < 0) scroll_window_index = 0;
+
+        // Вычисляем реальное смещение в пикселях: одно окно (колонка) + отступ
+        int actual_scroll_offset = scroll_window_index * (column_width + gap);
+
+        struct WindowRect windows[view_count];
+        calculate_niri_scrolling(0, 0, (int)usable_width, (int)usable_height, gap, (int)view_count, column_width, actual_scroll_offset, windows);
+
+        for (uint32_t i = 0; i < view_count; ++i) {
+            river_layout_v3_push_view_dimensions(layout, windows[i].x, windows[i].y, windows[i].w, windows[i].h, serial);
         }
     }
 
@@ -167,7 +174,7 @@ static void handle_layout_demand(void *data,
 // Привязываем функции к протоколу
 static const struct river_layout_v3_listener layout_listener = {
     .layout_demand = handle_layout_demand,
-    .user_command = handle_user_command,
+    .user_command = layout_handle_user_command,
 };
 
 

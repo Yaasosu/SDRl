@@ -1,5 +1,5 @@
 CC ?= gcc
-CFLAGS ?= -Wall -Wextra -g
+CFLAGS ?= -w -g
 
 WAYLAND_CFLAGS = $(shell pkg-config --cflags wayland-client)
 WAYLAND_LIBS = $(shell pkg-config --libs wayland-client)

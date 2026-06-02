@@ -18,6 +18,8 @@ static int bindings_enabled = 0;
 static int pointer_bindings_enabled = 0;
 static int next_x = 100;
 static int next_y = 100;
+static int screen_width = 1920; // Значения по умолчанию
+static int screen_height = 1080;
 
 struct window_state {
     struct river_window_v1 *window;
@@ -31,8 +33,10 @@ static struct river_pointer_binding_v1 *resize_binding = NULL;
 static struct river_window_v1 *pointer_window = NULL;
 static struct river_window_v1 *op_window = NULL;
 static int op_type = 0; // 1 = move, 2 = resize
-static int op_last_dx = 0;
-static int op_last_dy = 0;
+static int op_res_x = 0;
+static int op_res_y = 0;
+static int op_res_w = 0;
+static int op_res_h = 0;
 
 static void term_key_pressed(void *data, struct river_xkb_binding_v1 *binding) {
     if (fork() == 0) {
@@ -61,8 +65,11 @@ static void move_binding_pressed(void *data, struct river_pointer_binding_v1 *bi
     if (active_seat && pointer_window) {
         op_window = pointer_window;
         op_type = 1;
-        op_last_dx = 0;
-        op_last_dy = 0;
+        struct window_state *state = river_window_v1_get_user_data(op_window);
+        if (state) {
+            op_res_x = state->x;
+            op_res_y = state->y;
+        }
         river_seat_v1_op_start_pointer(active_seat);
         if (wm) river_window_manager_v1_manage_dirty(wm);
     }
@@ -77,8 +84,11 @@ static void resize_binding_pressed(void *data, struct river_pointer_binding_v1 *
     if (active_seat && pointer_window) {
         op_window = pointer_window;
         op_type = 2;
-        op_last_dx = 0;
-        op_last_dy = 0;
+        struct window_state *state = river_window_v1_get_user_data(op_window);
+        if (state) {
+            op_res_w = state->w;
+            op_res_h = state->h;
+        }
         river_seat_v1_op_start_pointer(active_seat);
         if (wm) river_window_manager_v1_manage_dirty(wm);
     }
@@ -104,15 +114,35 @@ static void seat_op_delta(void *data, struct river_seat_v1 *seat, int32_t dx, in
     struct window_state *state = river_window_v1_get_user_data(op_window);
     if (!state) return;
 
-    op_last_dx = dx;
-    op_last_dy = dy;
-
     if (op_type == 1) { // Перемещение
-        river_node_v1_set_position(state->node, state->x + dx, state->y + dy);
+        int nx = state->x + dx;
+        int ny = state->y + dy;
+
+        // Ограничиваем координаты границами экрана
+        if (nx < 0) nx = 0;
+        if (ny < 0) ny = 0;
+        if (nx + state->w > screen_width) nx = screen_width - state->w;
+        if (ny + state->h > screen_height) ny = screen_height - state->h;
+        
+        // Защита на случай, если само окно больше экрана
+        if (state->w > screen_width) nx = 0;
+        if (state->h > screen_height) ny = 0;
+
+        op_res_x = nx;
+        op_res_y = ny;
+        river_node_v1_set_position(state->node, nx, ny);
     } else if (op_type == 2) { // Изменение размера (с ограничением минимального размера)
-        int new_w = state->w + dx > 10 ? state->w + dx : 10;
-        int new_h = state->h + dy > 10 ? state->h + dy : 10;
-        river_window_v1_propose_dimensions(op_window, new_w, new_h);
+        int nw = state->w + dx;
+        int nh = state->h + dy;
+
+        if (nw < 10) nw = 10;
+        if (nh < 10) nh = 10;
+        if (state->x + nw > screen_width) nw = screen_width - state->x;
+        if (state->y + nh > screen_height) nh = screen_height - state->y;
+
+        op_res_w = nw;
+        op_res_h = nh;
+        river_window_v1_propose_dimensions(op_window, nw, nh);
     }
 
     if (wm) river_window_manager_v1_manage_dirty(wm);
@@ -122,19 +152,17 @@ static void seat_op_release(void *data, struct river_seat_v1 *seat) {
         struct window_state *state = river_window_v1_get_user_data(op_window);
         if (state) {
             if (op_type == 1) {
-                state->x += op_last_dx;
-                state->y += op_last_dy;
+                state->x = op_res_x;
+                state->y = op_res_y;
             } else if (op_type == 2) {
-                state->w = state->w + op_last_dx > 10 ? state->w + op_last_dx : 10;
-                state->h = state->h + op_last_dy > 10 ? state->h + op_last_dy : 10;
+                state->w = op_res_w;
+                state->h = op_res_h;
             }
         }
     }
     river_seat_v1_op_end(seat);
     op_window = NULL;
     op_type = 0;
-    op_last_dx = 0;
-    op_last_dy = 0;
 
     if (wm) river_window_manager_v1_manage_dirty(wm);
 }

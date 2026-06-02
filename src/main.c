@@ -18,8 +18,31 @@ static int bindings_enabled = 0;
 static int pointer_bindings_enabled = 0;
 static int next_x = 100;
 static int next_y = 100;
-static int screen_width = 1920; // Значения по умолчанию
-static int screen_height = 1080;
+static int desk_min_x = 0;
+static int desk_min_y = 0;
+static int desk_max_x = 1920;
+static int desk_max_y = 1080;
+
+struct output_state {
+    struct river_output_v1 *output;
+    int x, y, w, h;
+    struct output_state *next;
+};
+static struct output_state *output_list = NULL;
+
+static void recalc_desktop() {
+    if (!output_list) return;
+    desk_min_x = output_list->x;
+    desk_min_y = output_list->y;
+    desk_max_x = output_list->x + output_list->w;
+    desk_max_y = output_list->y + output_list->h;
+    for (struct output_state *os = output_list->next; os; os = os->next) {
+        if (os->x < desk_min_x) desk_min_x = os->x;
+        if (os->y < desk_min_y) desk_min_y = os->y;
+        if (os->x + os->w > desk_max_x) desk_max_x = os->x + os->w;
+        if (os->y + os->h > desk_max_y) desk_max_y = os->y + os->h;
+    }
+}
 
 struct window_state {
     struct river_window_v1 *window;
@@ -118,15 +141,13 @@ static void seat_op_delta(void *data, struct river_seat_v1 *seat, int32_t dx, in
         int nx = state->x + dx;
         int ny = state->y + dy;
 
-        // Ограничиваем координаты границами экрана
-        if (nx < 0) nx = 0;
-        if (ny < 0) ny = 0;
-        if (nx + state->w > screen_width) nx = screen_width - state->w;
-        if (ny + state->h > screen_height) ny = screen_height - state->h;
-        
-        // Защита на случай, если само окно больше экрана
-        if (state->w > screen_width) nx = 0;
-        if (state->h > screen_height) ny = 0;
+        // Блокируем вылет за края экранов
+        if (nx < desk_min_x) nx = desk_min_x;
+        if (nx + state->w > desk_max_x) nx = desk_max_x - state->w;
+
+        // Верх/низ по-прежнему ограничиваем жестко
+        if (ny < desk_min_y) ny = desk_min_y;
+        if (ny + state->h > desk_max_y) ny = desk_max_y - state->h;
 
         op_res_x = nx;
         op_res_y = ny;
@@ -137,8 +158,8 @@ static void seat_op_delta(void *data, struct river_seat_v1 *seat, int32_t dx, in
 
         if (nw < 10) nw = 10;
         if (nh < 10) nh = 10;
-        if (state->x + nw > screen_width) nw = screen_width - state->x;
-        if (state->y + nh > screen_height) nh = screen_height - state->y;
+        if (state->x + nw > desk_max_x) nw = desk_max_x - state->x;
+        if (state->y + nh > desk_max_y) nh = desk_max_y - state->y;
 
         op_res_w = nw;
         op_res_h = nh;
@@ -277,8 +298,46 @@ static void wm_window(void *data, struct river_window_manager_v1 *wm, struct riv
     printf("Новое окно создано!\n");
     new_window = window;
 }
+
+static void output_removed(void *data, struct river_output_v1 *output) {
+    struct output_state **curr = &output_list;
+    while (*curr) {
+        if ((*curr)->output == output) {
+            struct output_state *tmp = *curr;
+            *curr = (*curr)->next;
+            free(tmp);
+            break;
+        }
+        curr = &(*curr)->next;
+    }
+    recalc_desktop();
+}
+static void output_wl_output(void *data, struct river_output_v1 *output, uint32_t name) {}
+static void output_position(void *data, struct river_output_v1 *output, int32_t x, int32_t y) {
+    struct output_state *os = river_output_v1_get_user_data(output);
+    if (os) { os->x = x; os->y = y; recalc_desktop(); }
+}
+static void output_dimensions(void *data, struct river_output_v1 *output, int32_t width, int32_t height) {
+    struct output_state *os = river_output_v1_get_user_data(output);
+    if (os) { os->w = width; os->h = height; recalc_desktop(); }
+}
+static const struct river_output_v1_listener output_listener = {
+    .removed = output_removed,
+    .wl_output = output_wl_output,
+    .position = output_position,
+    .dimensions = output_dimensions,
+};
+
 static void wm_output(void *data, struct river_window_manager_v1 *wm, struct river_output_v1 *output) {
     printf("Найден монитор!\n");
+    struct output_state *os = calloc(1, sizeof(struct output_state));
+    os->output = output;
+    os->w = 1920; os->h = 1080;
+    os->next = output_list;
+    output_list = os;
+    
+    river_output_v1_set_user_data(output, os);
+    river_output_v1_add_listener(output, &output_listener, NULL);
 }
 static void wm_seat(void *data, struct river_window_manager_v1 *wm, struct river_seat_v1 *seat) {
     printf("Найдено устройство ввода (seat)!\n");

@@ -207,7 +207,14 @@ static void seat_pointer_enter(void *data, struct river_seat_v1 *seat, struct ri
 static void seat_pointer_leave(void *data, struct river_seat_v1 *seat) {
     pointer_window = NULL;
 }
-static void seat_window_interaction(void *data, struct river_seat_v1 *seat, struct river_window_v1 *window) {}
+static void seat_window_interaction(void *data, struct river_seat_v1 *seat, struct river_window_v1 *window) {
+    river_seat_v1_focus_window(seat, window); // Передаем фокус клавиатуры
+    struct window_state *state = river_window_v1_get_user_data(window);
+    if (state && state->node) {
+        river_node_v1_place_top(state->node); // Поднимаем окно поверх остальных
+    }
+    if (wm) river_window_manager_v1_manage_dirty(wm); // Сообщаем серверу применить изменения
+}
 static void seat_shell_surface_interaction(void *data, struct river_seat_v1 *seat, struct river_shell_surface_v1 *shell_surface) {}
 
 static void seat_op_delta(void *data, struct river_seat_v1 *seat, int32_t dx, int32_t dy) {
@@ -241,22 +248,30 @@ static void seat_op_delta(void *data, struct river_seat_v1 *seat, int32_t dx, in
             if (op_current_pointer_x >= os->x && op_current_pointer_x <= os->x + os->w &&
                 op_current_pointer_y >= os->y && op_current_pointer_y <= os->y + os->h) {
                 
-                int is_left = op_current_pointer_x <= os->x + 10;
-                int is_right = op_current_pointer_x >= os->x + os->w - 10;
-                int is_top = op_current_pointer_y <= os->y + 10;
-                int is_bottom = op_current_pointer_y >= os->y + os->h - 10;
+                int edge = 30; // Увеличиваем толщину самого края экрана
+                int corner_x = os->w / 3; // Угловая зона по горизонтали (1/3 экрана)
+                int corner_y = os->h / 3; // Угловая зона по вертикали (1/3 экрана)
+                int is_left = op_current_pointer_x <= os->x + edge;
+                int is_right = op_current_pointer_x >= os->x + os->w - edge;
+                int is_top = op_current_pointer_y <= os->y + edge;
+                int is_bottom = op_current_pointer_y >= os->y + os->h - edge;
+
+                int near_left = op_current_pointer_x <= os->x + corner_x;
+                int near_right = op_current_pointer_x >= os->x + os->w - corner_x;
+                int near_top = op_current_pointer_y <= os->y + corner_y;
+                int near_bottom = op_current_pointer_y >= os->y + os->h - corner_y;
 
                 // Сначала проверяем углы (25% экрана)
-                if (is_top && is_left) {
+                if ((is_top && near_left) || (is_left && near_top)) {
                     draw_snap_preview(os->x, os->y, os->w / 2, os->h / 2, state);
                     snapped = 1;
-                } else if (is_top && is_right) {
+                } else if ((is_top && near_right) || (is_right && near_top)) {
                     draw_snap_preview(os->x + os->w / 2, os->y, os->w / 2, os->h / 2, state);
                     snapped = 1;
-                } else if (is_bottom && is_left) {
+                } else if ((is_bottom && near_left) || (is_left && near_bottom)) {
                     draw_snap_preview(os->x, os->y + os->h / 2, os->w / 2, os->h / 2, state);
                     snapped = 1;
-                } else if (is_bottom && is_right) {
+                } else if ((is_bottom && near_right) || (is_right && near_bottom)) {
                     draw_snap_preview(os->x + os->w / 2, os->y + os->h / 2, os->w / 2, os->h / 2, state);
                     snapped = 1;
                 // Затем проверяем края (50% / 100% экрана)
@@ -308,30 +323,38 @@ static void seat_op_release(void *data, struct river_seat_v1 *seat) {
                         pointer_y >= os->y && pointer_y <= os->y + os->h) {
                         
                         int snapped = 0;
-                        int is_left = pointer_x <= os->x + 10;
-                        int is_right = pointer_x >= os->x + os->w - 10;
-                        int is_top = pointer_y <= os->y + 10;
-                        int is_bottom = pointer_y >= os->y + os->h - 10;
+                        int edge = 30;
+                        int corner_x = os->w / 3;
+                        int corner_y = os->h / 3;
+                        int is_left = pointer_x <= os->x + edge;
+                        int is_right = pointer_x >= os->x + os->w - edge;
+                        int is_top = pointer_y <= os->y + edge;
+                        int is_bottom = pointer_y >= os->y + os->h - edge;
 
-                        if (is_top && is_left) {
+                        int near_left = pointer_x <= os->x + corner_x;
+                        int near_right = pointer_x >= os->x + os->w - corner_x;
+                        int near_top = pointer_y <= os->y + corner_y;
+                        int near_bottom = pointer_y >= os->y + os->h - corner_y;
+
+                        if ((is_top && near_left) || (is_left && near_top)) {
                             state->x = os->x;
                             state->y = os->y;
                             state->w = os->w / 2;
                             state->h = os->h / 2;
                             snapped = 1;
-                        } else if (is_top && is_right) {
+                        } else if ((is_top && near_right) || (is_right && near_top)) {
                             state->x = os->x + os->w / 2;
                             state->y = os->y;
                             state->w = os->w / 2;
                             state->h = os->h / 2;
                             snapped = 1;
-                        } else if (is_bottom && is_left) {
+                        } else if ((is_bottom && near_left) || (is_left && near_bottom)) {
                             state->x = os->x;
                             state->y = os->y + os->h / 2;
                             state->w = os->w / 2;
                             state->h = os->h / 2;
                             snapped = 1;
-                        } else if (is_bottom && is_right) {
+                        } else if ((is_bottom && near_right) || (is_right && near_bottom)) {
                             state->x = os->x + os->w / 2;
                             state->y = os->y + os->h / 2;
                             state->w = os->w / 2;
